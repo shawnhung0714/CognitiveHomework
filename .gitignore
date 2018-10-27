@@ -102,3 +102,8 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+Reading/
+hw2/*.tgz
+*.DS_Store
+hw2/dataset/
+*.pdf
