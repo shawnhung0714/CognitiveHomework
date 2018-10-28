@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 from numpy.linalg import norm
 import heapq
+import pickle
 
 x_slice = 5
 y_slice = 5
@@ -12,16 +13,17 @@ class FeatureExtractor:
     def __init__(self, dataset_folder):
         self.dataset_folder = dataset_folder
 
+    def prepare_reference(self, dataset, folder='Reference'):
+        raise NotImplementedError()
+
     def extract_from_dataset(self):
         raise NotImplementedError()
 
 
 # * [Grid Color Moments](http://homepages.inf.ed.ac.uk/rbf/CVonline/LOCAL_COPIES/AV0405/KEEN/av_as2_nkeen.pdf)
 class GridColorMomentsExtractor(FeatureExtractor):
-
     def __init__(self, dataset_folder):
         super().__init__(dataset_folder)
-
         if not os.path.isfile(f'{dataset_folder}-Reference.npy'):
             self.prepare_reference(dataset_folder)
         self.reference = np.load(f'{dataset_folder}-Reference.npy')
@@ -65,14 +67,14 @@ class GridColorMomentsExtractor(FeatureExtractor):
         top5_sum = 0
         total_count = 0
         for subfolder in subfolders:
-            top1_count, top5_count = self.extract_from_subfolder(subfolder)
+            top1_count, top5_count = self._extract_from_subfolder(subfolder)
             top1_sum += top1_count
             top5_sum += top5_count
             total_count += len(self.reference)
 
         return top1_sum, top5_sum, total_count
 
-    def extract_from_subfolder(self, subfolder):
+    def _extract_from_subfolder(self, subfolder):
         train_data_path = os.path.join(self.dataset_folder, subfolder)
         images = sorted([item for item in os.listdir(
             train_data_path) if item != ".DS_Store"])
@@ -167,6 +169,128 @@ class GridColorMomentsExtractor(FeatureExtractor):
 
         return np.array(color_feature)
 
+
+class GaborExtractor(FeatureExtractor):
+
+    def __init__(self, dataset_folder):
+        super().__init__(dataset_folder)
+        self.kernels = GaborExtractor.gabor_kernel()
+        if not os.path.isfile(f'{dataset_folder}-Reference.npy'):
+            self.prepare_reference(dataset_folder)
+        self.reference = np.load(f'{dataset_folder}-Reference.npy')
+
+    @staticmethod
+    def convolution(image, filters):
+        result = np.zeros_like(image)
+        for kern in filters:
+            filtered_image = cv2.filter2D(image, cv2.CV_8UC3, kern)
+            np.maximum(result, filtered_image, result)
+        return result
+        
+    @staticmethod
+    def gabor_kernel():
+        filters = []
+        ksize = 9
+        # define the range for theta and nu
+        for theta in np.arange(0, np.pi, np.pi / 8):
+            for nu in np.arange(0, 6*np.pi/4, np.pi / 4):
+                kern = cv2.getGaborKernel(
+                    (ksize, ksize), 1.0, theta, nu, 0.5, 0, ktype=cv2.CV_32F)
+                kern /= 1.5*kern.sum()
+                filters.append(kern)
+        return np.array(filters)
+
+    def feature_from_image(self, image):
+        # initializing the feature vector
+        feat = []
+        # calculating the local energy for each convolved image
+        for j in range(40):
+            res = GaborExtractor.convolution(image, self.kernels[j])
+            feat.append(np.mean(res))
+            feat.append(np.std(res))
+        return np.array(feat)
+
+    def prepare_reference(self, dataset, folder='Reference'):
+        train_data_path = os.path.join(dataset, folder)
+        image_list = sorted([item for item in os.listdir(
+            train_data_path) if item != ".DS_Store"])
+        total = len(image_list)
+
+        print('-'*30)
+        print('Preparing reference...')
+        print('-'*30)
+
+        features = np.ndarray((total, 80), np.float32)
+
+        for idx, image_name in enumerate(image_list):
+            img = cv2.imread(os.path.join(train_data_path, image_name))
+            feature = self.feature_from_image(img)
+            features[idx] = feature
+            if idx % 10 == 0:
+                print(f'Done: {idx}/{total} images')
+
+        print('Loading done.')
+
+        np.save(f'{dataset}-{folder}.npy', features)
+        print(f'Saving to {dataset}-{folder}.npy files done.')
+
+    def extract_from_dataset(self):
+        subfolders = [item for item in os.listdir(self.dataset_folder) if item not in [
+            ".DS_Store", "Reference"]]
+        top1_sum = 0
+        top5_sum = 0
+        total_count = 0
+        for subfolder in subfolders:
+            top1_count, top5_count = self._extract_from_subfolder(subfolder)
+            top1_sum += top1_count
+            top5_sum += top5_count
+            total_count += len(self.reference)
+
+        return top1_sum, top5_sum, total_count
+
+    def _extract_from_subfolder(self, subfolder):
+        train_data_path = os.path.join(self.dataset_folder, subfolder)
+        images = sorted([item for item in os.listdir(
+            train_data_path) if item != ".DS_Store"])
+
+        total = len(images)
+        top1_count = 0
+        top5_count = 0
+
+        print('-'*30)
+        print(f'Classifying {subfolder}...')
+        print('-'*30)
+
+        for idx, image_name in enumerate(images):
+            img = cv2.imread(os.path.join(train_data_path, image_name))
+            possible_values = []
+            feature = self.feature_from_image(img)
+            for reference_index in len(self.reference):
+                substracted_mat = np.subtract(
+                    self.reference[reference_index], feature)
+                distance = norm(substracted_mat)
+                heapq.heappush(possible_values, (distance, reference_index))
+
+            top5_values = []
+            for i in range(5):
+                top5_values.append(heapq.heappop(possible_values))
+            top5 = [index for distance, index in top5_values]
+
+            if idx in top5_values[0]:
+                top1_count += 1
+                print(f'hit: {image_name}! Distance:{top5_values[0][0]}')
+
+            if idx in top5:
+                top5_count += 1
+                distance, index = [
+                    entry for entry in top5_values if entry[1] == idx][0]
+                print(f'hit in top 5: {image_name}! Distance:{distance}')
+
+            if idx % 10 == 0:
+                print(f'Done: {idx}/{total} images')
+
+        print('All done.')
+        return top1_count, top5_count
 
 class DogSIFTExtactor(FeatureExtractor):
     pass

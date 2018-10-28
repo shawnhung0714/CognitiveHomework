@@ -59,6 +59,13 @@
             "request": "launch",
             "program": "${file}",
             "console": "externalTerminal"
-        }
+        },
+        {
+            "name": "Python: hw2",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/hw2.py",
+            "console": "integratedTerminal"
+        },
     ]
 }
