@@ -3,7 +3,8 @@ import numpy as np
 import cv2
 from numpy.linalg import norm
 import heapq
-import pickle
+import multiprocessing
+import time
 
 x_slice = 5
 y_slice = 5
@@ -31,7 +32,7 @@ class GridColorMomentsExtractor(FeatureExtractor):
     def prepare_reference(self, dataset, folder='Reference'):
         train_data_path = os.path.join(dataset, folder)
         images = sorted([item for item in os.listdir(
-            train_data_path) if item != ".DS_Store"])
+            train_data_path) if item.endswith('.jpg')])
         total = len(images)
 
         print('-'*30)
@@ -77,7 +78,7 @@ class GridColorMomentsExtractor(FeatureExtractor):
     def _extract_from_subfolder(self, subfolder):
         train_data_path = os.path.join(self.dataset_folder, subfolder)
         images = sorted([item for item in os.listdir(
-            train_data_path) if item != ".DS_Store"])
+            train_data_path) if item.endswith('.jpg')])
 
         total = len(images)
 
@@ -181,19 +182,21 @@ class GaborExtractor(FeatureExtractor):
 
     @staticmethod
     def convolution(image, filters):
-        result = np.zeros_like(image)
+        result = np.zeros_like(image, dtype=float)
+        # Normalize images for better comparison.
+        # image = (image - image.mean()) // image.std()
         for kern in filters:
-            filtered_image = cv2.filter2D(image, cv2.CV_8UC3, kern)
-            np.maximum(result, filtered_image, result)
+            fimg = cv2.filter2D(image, cv2.CV_64FC3, kern)
+            np.maximum(result, fimg, result)
         return result
-        
+
     @staticmethod
     def gabor_kernel():
         filters = []
         ksize = 9
         # define the range for theta and nu
         for theta in np.arange(0, np.pi, np.pi / 8):
-            for nu in np.arange(0, 6*np.pi/4, np.pi / 4):
+            for nu in np.arange(np.pi / 4, 6*np.pi/4, np.pi / 4):
                 kern = cv2.getGaborKernel(
                     (ksize, ksize), 1.0, theta, nu, 0.5, 0, ktype=cv2.CV_32F)
                 kern /= 1.5*kern.sum()
@@ -213,7 +216,7 @@ class GaborExtractor(FeatureExtractor):
     def prepare_reference(self, dataset, folder='Reference'):
         train_data_path = os.path.join(dataset, folder)
         image_list = sorted([item for item in os.listdir(
-            train_data_path) if item != ".DS_Store"])
+            train_data_path) if item.endswith('.jpg')])
         total = len(image_list)
 
         print('-'*30)
@@ -222,13 +225,18 @@ class GaborExtractor(FeatureExtractor):
 
         features = np.ndarray((total, 80), np.float32)
 
+        async_results = []
+        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
         for idx, image_name in enumerate(image_list):
             img = cv2.imread(os.path.join(train_data_path, image_name))
-            feature = self.feature_from_image(img)
-            features[idx] = feature
-            if idx % 10 == 0:
-                print(f'Done: {idx}/{total} images')
+            async_results.append(pool.apply_async(
+                self._reference_worker, (img, idx)))
+        pool.close()
+        pool.join()
 
+        for async_result in async_results:
+            feature, idx = async_result.get()
+            features[idx] = feature
         print('Loading done.')
 
         np.save(f'{dataset}-{folder}.npy', features)
@@ -251,7 +259,7 @@ class GaborExtractor(FeatureExtractor):
     def _extract_from_subfolder(self, subfolder):
         train_data_path = os.path.join(self.dataset_folder, subfolder)
         images = sorted([item for item in os.listdir(
-            train_data_path) if item != ".DS_Store"])
+            train_data_path) if item.endswith('.jpg')])
 
         total = len(images)
         top1_count = 0
@@ -260,37 +268,63 @@ class GaborExtractor(FeatureExtractor):
         print('-'*30)
         print(f'Classifying {subfolder}...')
         print('-'*30)
-
-        for idx, image_name in enumerate(images):
+        start = time.time()
+        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+        async_results = []
+        for idx, image_name in enumerate(images[:10]):
             img = cv2.imread(os.path.join(train_data_path, image_name))
-            possible_values = []
-            feature = self.feature_from_image(img)
-            for reference_index in len(self.reference):
-                substracted_mat = np.subtract(
-                    self.reference[reference_index], feature)
-                distance = norm(substracted_mat)
-                heapq.heappush(possible_values, (distance, reference_index))
+            # top1, top5 = self._worker(idx, img, image_name, total)
+            # top1_count += top1
+            # top5_count += top5
+            async_results.append(pool.apply_async(
+                self._worker, (idx, img, image_name, total)))
+        pool.close()
+        pool.join()
 
-            top5_values = []
-            for i in range(5):
-                top5_values.append(heapq.heappop(possible_values))
-            top5 = [index for distance, index in top5_values]
+        for async_result in async_results:
+            top1, top5 = async_result.get()
+            top1_count += top1
+            top5_count += top5
 
-            if idx in top5_values[0]:
-                top1_count += 1
-                print(f'hit: {image_name}! Distance:{top5_values[0][0]}')
-
-            if idx in top5:
-                top5_count += 1
-                distance, index = [
-                    entry for entry in top5_values if entry[1] == idx][0]
-                print(f'hit in top 5: {image_name}! Distance:{distance}')
-
-            if idx % 10 == 0:
-                print(f'Done: {idx}/{total} images')
-
+        end = time.time()
+        print(f"time:{end - start}")
         print('All done.')
         return top1_count, top5_count
 
+    def _reference_worker(self, img, idx):
+        feature = self.feature_from_image(img)
+        return feature, idx
+
+    def _worker(self, idx, img, image_name, total):
+        feature = self.feature_from_image(img)
+        possible_values = []
+        top1_count = 0
+        top5_count = 0
+        for reference_index in range(self.reference.shape[0]):
+            substracted_mat = np.subtract(
+                self.reference[reference_index], feature)
+            distance = norm(substracted_mat)
+            heapq.heappush(possible_values, (distance, reference_index))
+        top5_values = []
+        for i in range(5):
+            top5_values.append(heapq.heappop(possible_values))
+        top5 = [index for distance, index in top5_values]
+
+        if idx in top5_values[0]:
+            top1_count += 1
+            print(f'hit: {image_name}! Distance:{top5_values[0][0]}')
+
+        if idx in top5:
+            top5_count += 1
+            distance, index = [
+                entry for entry in top5_values if entry[1] == idx][0]
+            print(f'hit in top 5: {image_name}! Distance:{distance}')
+        if idx % 10 == 0:
+            print(f'Done: {idx}/{total} images')
+
+        return top1_count, top5_count
+
+
 class DogSIFTExtactor(FeatureExtractor):
     pass
+
