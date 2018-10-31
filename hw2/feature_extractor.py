@@ -243,8 +243,8 @@ class GaborExtractor(FeatureExtractor):
         print(f'Saving to {dataset}-{folder}.npy files done.')
 
     def extract_from_dataset(self):
-        subfolders = [item for item in os.listdir(self.dataset_folder) if item not in [
-            ".DS_Store", "Reference"]]
+        subfolders = [item for item in os.listdir(
+            self.dataset_folder) if item != "Reference" and not item.startswith(".")]
         top1_sum = 0
         top5_sum = 0
         total_count = 0
@@ -271,20 +271,21 @@ class GaborExtractor(FeatureExtractor):
         start = time.time()
         pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
         async_results = []
-        for idx, image_name in enumerate(images[:10]):
+        for idx, image_name in enumerate(images):
             img = cv2.imread(os.path.join(train_data_path, image_name))
+            img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
             # top1, top5 = self._worker(idx, img, image_name, total)
             # top1_count += top1
             # top5_count += top5
             async_results.append(pool.apply_async(
                 self._worker, (idx, img, image_name, total)))
-        pool.close()
-        pool.join()
 
         for async_result in async_results:
             top1, top5 = async_result.get()
             top1_count += top1
             top5_count += top5
+        pool.close()
+        pool.join()
 
         end = time.time()
         print(f"time:{end - start}")
@@ -327,4 +328,3 @@ class GaborExtractor(FeatureExtractor):
 
 class DogSIFTExtactor(FeatureExtractor):
     pass
-
