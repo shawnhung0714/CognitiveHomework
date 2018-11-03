@@ -5,12 +5,16 @@ from numpy.linalg import norm
 import heapq
 import multiprocessing
 import time
+import logging
+
+
+logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
 
 x_slice = 5
 y_slice = 5
 
 
-class FeatureExtractor:
+class FeatureExtractor(object):
     def __init__(self, dataset_folder):
         self.dataset_folder = dataset_folder
 
@@ -18,6 +22,9 @@ class FeatureExtractor:
         raise NotImplementedError()
 
     def extract_from_dataset(self):
+        raise NotImplementedError()
+
+    def clean_up(self):
         raise NotImplementedError()
 
 
@@ -35,9 +42,9 @@ class GridColorMomentsExtractor(FeatureExtractor):
             train_data_path) if item.endswith('.jpg')])
         total = len(images)
 
-        print('-'*30)
-        print('Preparing reference...')
-        print('-'*30)
+        logging.info('-'*30)
+        logging.info('Preparing reference...')
+        logging.info('-'*30)
 
         image_moments = np.ndarray((total, x_slice, y_slice, 3, 3), np.float32)
 
@@ -54,16 +61,16 @@ class GridColorMomentsExtractor(FeatureExtractor):
                     image_moments[idx][i][j] = slice_moment
 
             if idx % 10 == 0:
-                print(f'Done: {idx}/{total} images')
+                logging.info(f'Done: {idx}/{total} images')
 
-        print('Loading done.')
+        logging.info('Loading done.')
 
         np.save(f'{dataset}-{folder}.npy', image_moments)
-        print(f'Saving to {dataset}-{folder}.npy files done.')
+        logging.info(f'Saving to {dataset}-{folder}.npy files done.')
 
     def extract_from_dataset(self):
-        subfolders = [item for item in os.listdir(self.dataset_folder) if item not in [
-            ".DS_Store", "Reference"]]
+        subfolders = [item for item in os.listdir(
+            self.dataset_folder) if item != "Reference" and not item.startswith(".")]
         top1_sum = 0
         top5_sum = 0
         total_count = 0
@@ -75,6 +82,9 @@ class GridColorMomentsExtractor(FeatureExtractor):
 
         return top1_sum, top5_sum, total_count
 
+    def clean_up(self):
+        os.remove(f'{self.dataset_folder}-Reference.npy')
+
     def _extract_from_subfolder(self, subfolder):
         train_data_path = os.path.join(self.dataset_folder, subfolder)
         images = sorted([item for item in os.listdir(
@@ -82,9 +92,9 @@ class GridColorMomentsExtractor(FeatureExtractor):
 
         total = len(images)
 
-        print('-'*30)
-        print(f'Classifying {subfolder}...')
-        print('-'*30)
+        logging.info('-'*30)
+        logging.info(f'Classifying {subfolder}...')
+        logging.info('-'*30)
 
         top1_count = 0
         top5_count = 0
@@ -124,18 +134,19 @@ class GridColorMomentsExtractor(FeatureExtractor):
 
             if idx in top5_values[0]:
                 top1_count += 1
-                print(f'hit: {image_name}! Distance:{top5_values[0][0]}')
+                logging.debug(
+                    f'hit: {image_name}! Distance:{top5_values[0][0]}')
 
             if idx in top5:
                 top5_count += 1
                 distance, index = [
                     entry for entry in top5_values if entry[1] == idx][0]
-                print(f'hit in top 5: {image_name}! Distance:{distance}')
+                logging.debug(
+                    f'hit in top 5: {image_name}! Distance:{distance}')
 
             if idx % 10 == 0:
-                print(f'Done: {idx}/{total} images')
+                logging.info(f'Done: {idx}/{total} images')
 
-        print('All done.')
         return top1_count, top5_count
 
     @staticmethod
@@ -219,9 +230,9 @@ class GaborExtractor(FeatureExtractor):
             train_data_path) if item.endswith('.jpg')])
         total = len(image_list)
 
-        print('-'*30)
-        print('Preparing reference...')
-        print('-'*30)
+        logging.info('-'*30)
+        logging.info('Preparing reference...')
+        logging.info('-'*30)
 
         features = np.ndarray((total, 80), np.float32)
 
@@ -237,10 +248,10 @@ class GaborExtractor(FeatureExtractor):
         for async_result in async_results:
             feature, idx = async_result.get()
             features[idx] = feature
-        print('Loading done.')
+        logging.info('Loading done.')
 
         np.save(f'{dataset}-{folder}.npy', features)
-        print(f'Saving to {dataset}-{folder}.npy files done.')
+        logging.info(f'Saving to {dataset}-{folder}.npy files done.')
 
     def extract_from_dataset(self):
         subfolders = [item for item in os.listdir(
@@ -255,6 +266,9 @@ class GaborExtractor(FeatureExtractor):
             total_count += len(self.reference)
 
         return top1_sum, top5_sum, total_count
+
+    def clean_up(self):
+        os.remove(f'{self.dataset_folder}-Reference.npy')
 
     def _extract_from_subfolder(self, subfolder):
         train_data_path = os.path.join(self.dataset_folder, subfolder)
@@ -271,7 +285,7 @@ class GaborExtractor(FeatureExtractor):
         start = time.time()
         pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
         async_results = []
-        for idx, image_name in enumerate(images):
+        for idx, image_name in enumerate(images[:1]):
             img = cv2.imread(os.path.join(train_data_path, image_name))
             img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
             # top1, top5 = self._worker(idx, img, image_name, total)
@@ -288,8 +302,7 @@ class GaborExtractor(FeatureExtractor):
         pool.join()
 
         end = time.time()
-        print(f"time:{end - start}")
-        print('All done.')
+        logging.debug(f"time:{end - start}")
         return top1_count, top5_count
 
     def _reference_worker(self, img, idx):
@@ -313,18 +326,163 @@ class GaborExtractor(FeatureExtractor):
 
         if idx in top5_values[0]:
             top1_count += 1
-            print(f'hit: {image_name}! Distance:{top5_values[0][0]}')
+            logging.debug(f'hit: {image_name}! Distance:{top5_values[0][0]}')
 
         if idx in top5:
             top5_count += 1
             distance, index = [
                 entry for entry in top5_values if entry[1] == idx][0]
-            print(f'hit in top 5: {image_name}! Distance:{distance}')
+            logging.debug(f'hit in top 5: {image_name}! Distance:{distance}')
         if idx % 10 == 0:
-            print(f'Done: {idx}/{total} images')
+            logging.info(f'Done: {idx}/{total} images')
 
         return top1_count, top5_count
 
 
 class DogSIFTExtactor(FeatureExtractor):
-    pass
+    def __init__(self, dataset_folder):
+        super().__init__(dataset_folder)
+        if not os.path.isfile(f'{dataset_folder}-Reference.npy'):
+            self.prepare_reference(dataset_folder)
+        test_list = np.load(f'{dataset_folder}-Reference.npy')
+        self.reference = []
+        # self.reference = []
+        for index in range(test_list.shape[0]):
+            test_entry = test_list[index]
+            keypoints = []
+            for entry in test_entry[0]:
+                keypoint = cv2.KeyPoint(
+                    x=entry[0],
+                    y=entry[1],
+                    _size=entry[2],
+                    _angle=entry[3],
+                    _response=entry[4],
+                    _octave=int(entry[5]),
+                    _class_id=int(entry[6]))
+                keypoints.append(keypoint)
+            self.reference.append((keypoints, test_entry[1]))
+
+    def prepare_reference(self, dataset, folder='Reference'):
+        train_data_path = os.path.join(dataset, folder)
+        image_list = sorted([item for item in os.listdir(
+            train_data_path) if item.endswith('.jpg')])
+        total = len(image_list)
+
+        logging.info('-'*30)
+        logging.info('Preparing reference...')
+        logging.info('-'*30)
+        results = []
+        for idx, image_name in enumerate(image_list):
+            img = cv2.imread(os.path.join(train_data_path, image_name))
+            results.append(self._reference_worker(img, idx)[1:])
+            if idx % 10 == 0:
+                logging.info(f'Done: {idx}/{total} images')
+
+        logging.info('Loading done.')
+        np.save(f'{dataset}-{folder}.npy', np.array(results))
+        logging.info(f'Saving to {dataset}-{folder}.npy files done.')
+
+    def _reference_worker(self, img, idx):
+        sift = cv2.xfeatures2d.SIFT_create()
+        keypoints, features = sift.detectAndCompute(img, None)
+        result = []
+        for index, keypoint in enumerate(keypoints):
+            entry = [
+                keypoint.pt[0],
+                keypoint.pt[1],
+                keypoint.size,
+                keypoint.angle,
+                keypoint.response,
+                keypoint.octave,
+                keypoint.class_id
+            ]
+            result.append(entry)
+        return idx, np.array(result), features
+
+    def extract_from_dataset(self):
+        subfolders = [item for item in os.listdir(
+            self.dataset_folder) if item != "Reference" and not item.startswith(".")]
+        top1_sum = 0
+        top5_sum = 0
+        total_count = 0
+        for subfolder in subfolders:
+            top1_count, top5_count = self._extract_from_subfolder(subfolder)
+            top1_sum += top1_count
+            top5_sum += top5_count
+            total_count += len(self.reference)
+
+        return top1_sum, top5_sum, total_count
+
+    def clean_up(self):
+        os.remove(f'{self.dataset_folder}-Reference.npy')
+
+    def _extract_from_subfolder(self, subfolder):
+        train_data_path = os.path.join(self.dataset_folder, subfolder)
+        images = sorted([item for item in os.listdir(
+            train_data_path) if item.endswith('.jpg')])
+
+        total = len(images)
+        top1_count = 0
+        top5_count = 0
+
+        logging.info('-'*30)
+        logging.info(f'Classifying {subfolder}...')
+        logging.info('-'*30)
+        start = time.time()
+        # pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+        # async_results = []
+        for idx, image_name in enumerate(images):
+            img = cv2.imread(os.path.join(train_data_path, image_name))
+            top1, top5 = self._worker(idx, img, image_name, total)
+            top1_count += top1
+            top5_count += top5
+            # async_results.append(pool.apply_async(
+            #     self._worker, (idx, img, image_name, total)))
+        # pool.close()
+        # pool.join()
+
+        # for async_result in async_results:
+        #     top1, top5 = async_result.get()
+        #     top1_count += top1
+        #     top5_count += top5
+
+        end = time.time()
+        logging.debug(f"time:{end - start}")
+        return top1_count, top5_count
+
+    def _worker(self, idx, img, image_name, total):
+        sift = cv2.xfeatures2d.SIFT_create()
+        keypoints, features = sift.detectAndCompute(img, None)
+
+        index_params = {'algorithm': 1, 'trees': 5}
+        search_params = {'checks': 50}   # or pass empty dictionary
+        flann = cv2.FlannBasedMatcher(index_params, search_params)
+
+        possible_values = []
+        top1_count = 0
+        top5_count = 0
+        for reference_index in range(len(self.reference)):
+            test_entry = self.reference[reference_index]
+            matches = flann.knnMatch(test_entry[1], features, k=2)
+            matches = [(m, n)
+                       for (m, n) in matches if m.distance < 0.7 * n.distance]
+            heapq.heappush(possible_values, (-len(matches), reference_index))
+
+        top5_values = []
+        for i in range(5):
+            top5_values.append(heapq.heappop(possible_values))
+        top5 = [index for distance, index in top5_values]
+
+        if idx in top5_values[0]:
+            top1_count += 1
+            logging.debug(f'hit: {image_name}! Matches:{-top5_values[0][0]}')
+
+        if idx in top5:
+            top5_count += 1
+            distance, index = [
+                entry for entry in top5_values if entry[1] == idx][0]
+            logging.debug(f'hit in top 5: {image_name}! Matches:{-distance}')
+        if idx % 10 == 0:
+            logging.info(f'Done: {idx}/{total} images')
+
+        return top1_count, top5_count
