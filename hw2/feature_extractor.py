@@ -8,7 +8,7 @@ import time
 import logging
 
 
-logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 x_slice = 5
 y_slice = 5
@@ -34,7 +34,7 @@ all_group_list = [
     'book_covers',
     'museum_paintings',
     'video_frames',
-    'business_cards',
+    'business_cards'
 ]
 
 # * [Grid Color Moments](http://homepages.inf.ed.ac.uk/rbf/CVonline/LOCAL_COPIES/AV0405/KEEN/av_as2_nkeen.pdf)
@@ -195,6 +195,7 @@ class GaborExtractor(FeatureExtractor):
 
     def __init__(self, group):
         super().__init__(group)
+        self.kernels = GaborExtractor.gabor_kernel()
         self.prepare_reference()
 
     @staticmethod
@@ -246,18 +247,24 @@ class GaborExtractor(FeatureExtractor):
 
             features = np.ndarray((total, 80), np.float32)
 
-            async_results = []
-            pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+            # async_results = []
+            # pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
             for idx, image_name in enumerate(image_list):
                 img = cv2.imread(os.path.join(train_data_path, image_name))
-                async_results.append(pool.apply_async(
-                    self._reference_worker, (img, idx)))
-            pool.close()
-            pool.join()
-
-            for async_result in async_results:
-                feature, idx = async_result.get()
+                feature, idx = self._reference_worker(img, idx)
                 features[idx] = feature
+                if idx % 10 == 0:
+                    logging.debug(f'Done: {idx}/{total} images')
+            #     async_results.append(pool.apply_async(
+            #         self._reference_worker, (img, idx)))
+
+            # for async_result in async_results:
+            #     feature, idx = async_result.get()
+            #     features[idx] = feature
+            #     if idx % 10 == 0:
+            #         logging.debug(f'Done: {idx}/{total} images')
+            # pool.close()
+            # pool.join()
             logging.info('Loading done.')
 
             np.save(f'{group}-Reference.npy', features)
@@ -293,23 +300,23 @@ class GaborExtractor(FeatureExtractor):
         print('-'*30)
         print(f'Classifying {subfolder}...')
         print('-'*30)
-        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
-        async_results = []
+        # pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+        # async_results = []
         for idx, image_name in enumerate(images):
             img = cv2.imread(os.path.join(subfolder, image_name))
             img = cv2.resize(img, (0, 0), fx=0.25, fy=0.25)
-            # top1, top5 = self._worker(idx, img, image_name, total)
-            # top1_count += top1
-            # top5_count += top5
-            async_results.append(pool.apply_async(
-                self._worker, (idx, img, image_name, total)))
-
-        for async_result in async_results:
-            top1, top5 = async_result.get()
+            top1, top5 = self._worker(idx, img, image_name, total)
             top1_count += top1
             top5_count += top5
-        pool.close()
-        pool.join()
+            # async_results.append(pool.apply_async(
+            #     self._worker, (idx, img, image_name, total)))
+
+        # for async_result in async_results:
+        #     top1, top5 = async_result.get()
+        #     top1_count += top1
+        #     top5_count += top5
+        # pool.close()
+        # pool.join()
 
         return top1_count, top5_count, total
 
@@ -328,7 +335,7 @@ class GaborExtractor(FeatureExtractor):
                 substracted_mat = np.subtract(
                     reference[reference_index], feature)
                 distance = norm(substracted_mat)
-                heapq.heappush(possible_values, (distance, reference_index))
+                heapq.heappush(possible_values, (distance, reference_index, group))
         top5_values = []
         for i in range(5):
             top5_values.append(heapq.heappop(possible_values))
